@@ -1,0 +1,14 @@
+torch>=1.11
+torchvision
+segmentation-models-pytorch
+timm
+albumentations
+opencv-python
+nibabel
+matplotlib
+scikit-image
+monai
+pandas
+scikit-learn
+# pydensecrf
+tqdm
