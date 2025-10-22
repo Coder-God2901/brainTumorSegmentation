@@ -37,32 +37,45 @@ def make_transforms(image_size=(256,256)):
 
 # ---------- Custom Loss Functions ----------
 class FocalDiceLoss(nn.Module):
-    def __init__(self, gamma=2.0):
+    """
+    Dice + (optionally weighted) CrossEntropy loss.
+    If class_weights is provided, it's applied to the CE term.
+    """
+    def __init__(self, gamma=2.0, class_weights=None):
         super().__init__()
         self.gamma = gamma
         self.dice = smp.losses.DiceLoss(mode='multiclass')
+        # store weights as a tensor or None
+        self.register_buffer('class_weights', torch.tensor(class_weights, dtype=torch.float32) if class_weights is not None else None)
 
     def forward(self, inputs, targets):
+        # inputs: logits (N, C, H, W), targets: (N, H, W) long
         probs = torch.softmax(inputs, dim=1)
-        # DiceLoss in segmentation_models_pytorch expects integer class labels (N,H,W) for multiclass mode
-        # so pass `targets` (LongTensor) directly.
+        # DiceLoss in segmentation_models_pytorch expects probabilities and integer labels for multiclass mode
         dice_loss = self.dice(probs, targets)
 
-        # For focal-style cross-entropy, build one-hot from targets (ensure contiguous)
-        one_hot = torch.nn.functional.one_hot(targets, num_classes=inputs.shape[1]).permute(0,3,1,2).float().contiguous()
-        ce = -(one_hot * torch.log(probs + 1e-7)).sum(1)
-        focal = ((1 - probs.max(1)[0]) ** self.gamma * ce).mean()
-        return dice_loss + 0.5 * focal
+        # Use standard CrossEntropyLoss with optional per-class weights
+        # CrossEntropyLoss expects raw logits
+        if self.class_weights is not None:
+            # ensure weights are on the same device as inputs
+            weights = self.class_weights.to(inputs.device)
+        else:
+            weights = None
+
+        ce_loss = torch.nn.functional.cross_entropy(inputs, targets, weight=weights)
+
+        # Combine losses (scale CE to keep similar magnitude as before)
+        return dice_loss + 0.5 * ce_loss
 
 # ---------- Training Loop ----------
-def train_loop(model, train_loader, val_loader, epochs=100, lr=5e-4, device="cuda", save_dir="checkpoints"):
+def train_loop(model, train_loader, val_loader, epochs=100, lr=5e-4, device="cuda", save_dir="checkpoints", class_weights=None):
     os.makedirs(save_dir, exist_ok=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     # Use automatic mixed precision only when training on CUDA devices.
     use_amp = (device == "cuda" or (device == "cpu" and torch.cuda.is_available())) and torch.cuda.is_available()
     scaler = GradScaler() if use_amp else None
-    loss_fn = FocalDiceLoss()
+    loss_fn = FocalDiceLoss(class_weights=class_weights)
 
     for epoch in range(1, epochs+1):
         # Allow an external stop signal by touching a file named STOP inside the save_dir.

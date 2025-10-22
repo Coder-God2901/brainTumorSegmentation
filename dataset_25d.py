@@ -79,3 +79,70 @@ class TwoPointFiveDDataset(Dataset):
             lbl_tensor = torch.from_numpy(lbl_slice).long()
 
         return img_tensor, lbl_tensor
+
+
+class SliceDataset(Dataset):
+    """
+    Deterministic slice-level dataset.
+    Builds an index of (img_path, lbl_path, z) so sampling and weighting can be done per-slice.
+    Returns (image_tensor(C,H,W), label_tensor(H,W)).
+    """
+    def __init__(self, img_files, lbl_files, transform=None):
+        assert len(img_files) == len(lbl_files), "image and label lists must match"
+        self.entries = []  # list of tuples (img_path, lbl_path, z)
+        self.transform = transform
+        for img_path, lbl_path in zip(img_files, lbl_files):
+            try:
+                lbl_img = nib.load(lbl_path)
+                lbl_shape = lbl_img.shape
+                # expect (H, W, Z)
+                if len(lbl_shape) == 3:
+                    nz = lbl_shape[2]
+                elif len(lbl_shape) == 4:
+                    # unusual but handle
+                    nz = lbl_shape[2]
+                else:
+                    nz = lbl_shape[-1]
+                for z in range(nz):
+                    self.entries.append((img_path, lbl_path, z))
+            except Exception as e:
+                print(f"[❌ SliceDataset read error] {lbl_path}: {e}")
+
+    def __len__(self):
+        return len(self.entries)
+
+    def __getitem__(self, idx):
+        img_path, lbl_path, z = self.entries[idx]
+        img = load_nifti(img_path)
+        lbl = load_nifti(lbl_path)
+
+        if img is None or lbl is None:
+            raise RuntimeError(f"Failed to load: {img_path} or {lbl_path}")
+
+        # Expect img shape (H,W,Z,4) or (H,W,Z)
+        if img.ndim == 3:
+            img = np.expand_dims(img, axis=-1)
+
+        img_slice = img[:, :, z, :]
+        lbl_slice = lbl[:, :, z]
+
+        img_slice = img_slice.astype(np.float32)
+        lbl_slice = lbl_slice.astype(np.int64)
+
+        if self.transform:
+            augmented = self.transform(image=img_slice, mask=lbl_slice)
+            img_a = augmented.get('image')
+            lbl_a = augmented.get('mask')
+            if isinstance(img_a, np.ndarray):
+                img_tensor = torch.from_numpy(img_a.transpose(2, 0, 1)).float()
+            else:
+                img_tensor = img_a.float()
+            if isinstance(lbl_a, np.ndarray):
+                lbl_tensor = torch.from_numpy(lbl_a).long()
+            else:
+                lbl_tensor = lbl_a.long()
+        else:
+            img_tensor = torch.from_numpy(img_slice.transpose(2, 0, 1)).float()
+            lbl_tensor = torch.from_numpy(lbl_slice).long()
+
+        return img_tensor, lbl_tensor
