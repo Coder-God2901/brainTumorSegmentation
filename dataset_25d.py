@@ -91,10 +91,18 @@ class SliceDataset(Dataset):
         assert len(img_files) == len(lbl_files), "image and label lists must match"
         self.entries = []  # list of tuples (img_path, lbl_path, z)
         self.transform = transform
+        # cache label volumes to avoid repeated disk reads during scanning
+        self._label_cache = {}
         for img_path, lbl_path in zip(img_files, lbl_files):
             try:
                 lbl_img = nib.load(lbl_path)
                 lbl_shape = lbl_img.shape
+                # load the label array once and cache it
+                try:
+                    self._label_cache[lbl_path] = lbl_img.get_fdata().astype(np.int64)
+                except Exception:
+                    # fallback: leave absent from cache
+                    pass
                 # expect (H, W, Z)
                 if len(lbl_shape) == 3:
                     nz = lbl_shape[2]
@@ -114,7 +122,11 @@ class SliceDataset(Dataset):
     def __getitem__(self, idx):
         img_path, lbl_path, z = self.entries[idx]
         img = load_nifti(img_path)
-        lbl = load_nifti(lbl_path)
+        # use cached label if available
+        if lbl_path in self._label_cache:
+            lbl = self._label_cache[lbl_path]
+        else:
+            lbl = load_nifti(lbl_path)
 
         if img is None or lbl is None:
             raise RuntimeError(f"Failed to load: {img_path} or {lbl_path}")
