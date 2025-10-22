@@ -164,10 +164,3 @@ Remove-Item .\checkpoints\STOP -ErrorAction SilentlyContinue
 ```
 
 ---
-
-If you'd like, I can:
-
-- Patch `dataset_brat20` to use per-volume normalization and re-evaluate on a small subset.
-- Add `--subset`, `--patch_size`, and `--base_c` CLI support to `train_brats.py` and run a short subset training with class-weighted loss.
-
-Tell me which and I will implement and run it for you.
