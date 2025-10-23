@@ -70,7 +70,8 @@ class BraTS2020Dataset(Dataset):
             for ext in ('.nii.gz', '.nii'):
                 pth = os.path.join(patient_path, f"{base}_{m}{ext}")
                 if os.path.exists(pth):
-                    img = nib.load(pth).get_fdata()
+                    # request float32 directly to avoid temporary float64 allocation
+                    img = nib.load(pth).get_fdata(dtype=np.float32)
                     break
             if img is None:
                 raise FileNotFoundError(f"Missing modality file for {base}_{m} in {patient_path}")
@@ -81,7 +82,8 @@ class BraTS2020Dataset(Dataset):
         for ext in ('.nii.gz', '.nii'):
             seg_p = os.path.join(patient_path, f"{os.path.basename(patient_path)}_seg{ext}")
             if os.path.exists(seg_p):
-                seg = nib.load(seg_p).get_fdata().astype(np.uint8)
+                # nibabel requires floating dtype for get_fdata; request float32 then cast to int64
+                seg = nib.load(seg_p).get_fdata(dtype=np.float32).astype(np.int64)
                 break
         if seg is None:
             raise FileNotFoundError(f"Missing segmentation file for {os.path.basename(patient_path)} in {patient_path}")
@@ -147,8 +149,9 @@ class BraTS2020Dataset(Dataset):
 
 
 def get_transforms():
+    # Use per-volume normalization for MRI (z-score) instead of assuming 0-255 ranges
     return Compose([
-        ScaleIntensityRanged(keys=['image'], a_min=0, a_max=255, b_min=0.0, b_max=1.0, clip=True),
+        # NormalizeIntensityd will compute (x - mean) / std per volume (nonzero voxels only)
         NormalizeIntensityd(keys=['image'], nonzero=True, channel_wise=True),
         RandFlipd(keys=['image', 'mask'], prob=0.5, spatial_axis=0),
         RandRotate90d(keys=['image', 'mask'], prob=0.5, max_k=3),
