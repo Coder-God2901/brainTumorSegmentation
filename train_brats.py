@@ -6,6 +6,7 @@ from tqdm import tqdm
 from dataset_brat20 import BraTS2020Dataset, get_transforms
 from model_unet3d import UNet3D
 from losses import dice_loss
+import numpy as np
 
 
 def main():
@@ -71,14 +72,53 @@ def main():
         # Validation
         model.eval()
         val_loss = 0.0
+        # prepare confusion matrix accumulator for voxel-wise counts
+        num_classes = 4
+        conf = np.zeros((num_classes, num_classes), dtype=np.int64)
         with torch.no_grad():
             for img, mask in tqdm(val_loader, desc=f'Epoch {epoch} [Val]'):
                 img, mask = img.to(device), mask.to(device)
                 out = model(img)
                 loss = dice_loss(out, mask)
                 val_loss += loss.item()
+
+                # compute predicted class per voxel
+                probs = torch.softmax(out, dim=1)
+                preds = torch.argmax(probs, dim=1).cpu().numpy()
+                truths = mask.cpu().numpy()
+
+                # ensure shapes: (B, D, H, W) or (B, H, W, ) depending on dataset
+                # flatten and accumulate confusion matrix
+                preds_flat = preds.reshape(-1)
+                truths_flat = truths.reshape(-1)
+                for t, p in zip(truths_flat, preds_flat):
+                    if 0 <= int(t) < num_classes and 0 <= int(p) < num_classes:
+                        conf[int(t), int(p)] += 1
+
         val_loss /= max(1, len(val_loader))
         print(f'Epoch {epoch} | Val Loss: {val_loss:.4f}')
+
+        # compute per-class Dice from confusion matrix
+        dices = []
+        for c in range(num_classes):
+            tp = int(conf[c, c])
+            fp = int(conf[:, c].sum() - tp)
+            fn = int(conf[c, :].sum() - tp)
+            denom = (2 * tp + fp + fn)
+            if denom == 0:
+                dices.append(float('nan'))
+            else:
+                dices.append((2.0 * tp) / denom)
+
+        print('Per-class Dice:')
+        for i, d in enumerate(dices):
+            if np.isnan(d):
+                print(f'  Class {i}: n/a (no voxels)')
+            else:
+                print(f'  Class {i}: {d:.4f}')
+
+        print('Confusion matrix (rows=true, cols=pred):')
+        print(conf)
 
         # Save checkpoint
         torch.save(model.state_dict(), os.path.join(save_dir, f'model_brats_epoch{epoch}.pth'))
